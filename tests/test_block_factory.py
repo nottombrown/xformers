@@ -77,6 +77,8 @@ def test_xformer_encoder_block(
         "dropout": DROPOUT,
         "activation": activation,
         "hidden_layer_multiplier": 4,
+        "number_of_experts": 4,
+        "gate_config": "top_2",
     }
 
     position_encoding_config = {

@@ -71,10 +71,12 @@ class GPT(pl.LightningModule):
                     },
                 },
                 "feedforward_config": {
-                    "name": "FusedMLP",  # Use MLP if Triton is not available
+                    "name": "MixtureOfExperts",  # Use MLP if Triton is not available
                     "dropout": self.hparams.mlp_pdrop,
                     "activation": "gelu",
                     "hidden_layer_multiplier": self.hparams.hidden_layer_multiplier,
+                    "number_of_experts": 4,
+                    "gate_config": "top_2",
                 },
             }
         ]
@@ -273,7 +275,7 @@ if __name__ == "__main__":
     # Adjust batch depending on the available memory on your machine.
     # You can also use reversible layers to save memory
     REF_BATCH = 512
-    BATCH = 256
+    BATCH = 64
 
     WORKERS = 4
     EPOCHS = 1
@@ -304,6 +306,7 @@ if __name__ == "__main__":
         attention="scaled_dot_product",
         warmup_tokens=REF_BATCH * WARMUP,
         final_tokens=EPOCHS * len(train_dataset) * BLOCK,
+        hidden_layer_multiplier=1,
     )
     print(model)
 
