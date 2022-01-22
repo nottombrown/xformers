@@ -21,7 +21,7 @@ def _make_seq(n_ctx: int, value: int, n_heads: int = 3, d_head: int = 2):
 def _make_seq_arange(n_ctx: int, start_value: int, d_head: int, n_heads=1):
     return (
         torch.full([n_ctx, n_heads, d_head], start_value, **bf16_cuda())
-        + torch.arange(n_ctx, **bf16_cuda())[:, None]
+        + torch.arange(n_ctx, **bf16_cuda())[:, None, None]
     )
 
 
@@ -112,8 +112,8 @@ def test_ragged_qk_dotprod_multiple_seqs():
     ):
         print(f"Checking {seq_idx=}")
         assert_eq(
-            torch_scores[seq_idx, :n_ctx_q, :n_ctx_k],
-            scores[seq_idx, :n_ctx_q, :n_ctx_k],
+            torch_scores[:, seq_idx, :n_ctx_q, :n_ctx_k],
+            scores[:, seq_idx, :n_ctx_q, :n_ctx_k],
         )
 
 
