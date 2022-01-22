@@ -44,7 +44,8 @@ def test_ragged_qk_dotprod_single_seq():
     lut = RaggedQkPidLookupTable.from_query_and_key_tokens_per_seq(
         n_ctx_q_per_seq=query.n_ctx_per_seq, n_ctx_k_per_seq=key.n_ctx_per_seq
     )
-
+    # "hsqk"
+    # (1, 1, 4, 3)
     scores = ragged_qk_dotprod(query, key, lut)
     assert_eq(torch_scores, scores)
 

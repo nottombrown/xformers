@@ -57,9 +57,10 @@ def _qk_dotprod_kernel(
     d_head,
     stride_ctx_q,
     stride_ctx_k,
+    stride_out_head,
+    stride_out_seq,
     stride_out_q,
     stride_out_k,
-    stride_out_seq,
     total_ctx_q_across_all_seqs,
     total_ctx_k_across_all_seqs,
     # These get populated from the triton.Config
@@ -298,7 +299,9 @@ def ragged_qk_dotprod(
     query: RaggedActivations, key: RaggedActivations, lut: RaggedQkPidLookupTable
 ) -> torch.Tensor:
     """
-    outputs scores with dimensions "hsqk" (heads, seqs, q_ctx, k_ctx)
+    inputs are ragged "chd" (ctx_across_all_seqs, n_heads, d_head)
+
+    Outputs are garbaged-padded "hsqk" (n_heads, n_seqs, q_ctx, k_ctx)
     """
     device = query.device
 
@@ -308,14 +311,12 @@ def ragged_qk_dotprod(
     # check constraints
     total_ctx_q_across_all_seqs, n_heads, d_head = query.raw_tensor.shape
     total_ctx_k_across_all_seqs, n_heads_k, d_head_k = key.raw_tensor.shape
-    assert (
-        d_head == d_head_k == lut.d_head
-    ), f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
+    assert d_head == d_head_k, f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
     assert n_heads == n_heads_k, f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
 
     # allocates output
     max_n_ctx_q_across_seqs = query.max_n_ctx_per_seq
-    assert_eq(n_heads, 1)
+    assert_eq(n_heads, 1)  # not supported
 
     assert query.n_seqs == key.n_seqs
     # TODO: flag use zeros for garbage
@@ -326,8 +327,8 @@ def ragged_qk_dotprod(
     )
 
     # Stride along the d_head dimension must be 1
-    assert query.raw_tensor.stride(1) == 1, f"{query.raw_tensor.stride(1)}"
-    assert key.raw_tensor.stride(1) == 1, f"{key.raw_tensor.stride(1)}"
+    assert query.raw_tensor.stride(2) == 1, f"{query.raw_tensor.stride(1)}"
+    assert key.raw_tensor.stride(2) == 1, f"{key.raw_tensor.stride(1)}"
 
     # pid_to_seq_idx = [0, 0, 1, 2, 2]
     grid = (lut.n_pids_total,)
@@ -347,9 +348,10 @@ def ragged_qk_dotprod(
         d_head=d_head,
         stride_ctx_q=query.raw_tensor.stride(0),
         stride_ctx_k=key.raw_tensor.stride(0),
-        stride_out_seq=scores_out.stride(0),
-        stride_out_q=scores_out.stride(1),
-        stride_out_k=scores_out.stride(2),
+        stride_out_head=scores_out.stride(0),
+        stride_out_seq=scores_out.stride(1),
+        stride_out_q=scores_out.stride(2),
+        stride_out_k=scores_out.stride(3),
         total_ctx_q_across_all_seqs=total_ctx_q_across_all_seqs,
         total_ctx_k_across_all_seqs=total_ctx_k_across_all_seqs,
     )

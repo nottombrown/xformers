@@ -176,4 +176,4 @@ def scores_via_qk_dotprod(
 ) -> torch.Tensor:
     padded_query = query.to_garbage_padded()
     padded_key = key.to_garbage_padded()
-    return torch.einsum("skhd,sqhd->sqhk", padded_key, padded_query)
+    return torch.einsum("skhd,sqhd->hsqk", padded_key, padded_query)
