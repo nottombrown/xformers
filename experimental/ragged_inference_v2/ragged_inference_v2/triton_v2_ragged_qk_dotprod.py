@@ -78,6 +78,7 @@ def _qk_dotprod_kernel(
     out_q_block = tl.load(pid_to_out_q_block_ptr + pid)
     out_k_block = tl.load(pid_to_out_k_block_ptr + pid)
     out_seq_idx = tl.load(pid_to_out_seq_idx_ptr + pid)
+    out_head_idx = tl.load(pid_to_out_head_idx_ptr + pid)
     in_q_token_offset = tl.load(pid_to_in_q_token_offset_ptr + pid)
     in_k_token_offset = tl.load(pid_to_in_k_token_offset_ptr + pid)
 
@@ -96,21 +97,26 @@ def _qk_dotprod_kernel(
 
     rd = tl.arange(0, BLOCK_D)  # rd indexes into the d_head dimension
 
-    # We use broadcasting to convert our 1D ranges into 2D tiles
-    q_ptr_tile = q_ptr + (rq[:, None] * stride_ctx_q + rd[None, :])
-    k_ptr_tile = k_ptr + (rd[:, None] + rk[None, :] * stride_ctx_k)
+    # head_offset = out_head_idx * stride_in_head
 
-    # After we have profiling, see if we can rewrite this to be more readable by
-    # just updating rd += BLOCK_D
-    for d_max_offset in range(d_head, 0, -BLOCK_D):
+    # We use broadcasting to convert our 1D ranges into 2D tiles
+    q_ptr_tile = q_ptr + (rq[:, None] * stride_ctx_q + rd[None, :])  # + head_offset
+    k_ptr_tile = k_ptr + (rk[None, :] * stride_ctx_k + rd[:, None])  # + head_offset
+
+    # We track the amount of the full d_model that we haven't yet accumulated and
+    # decrease it each block. Then if d_model isn't divisible by BLOCK_D, it allows
+    # us to mask out the bit at the end. We could make this more readable by putting
+    # the two lines above within the for loop, and we think this wasn't done because
+    # it would be slower
+    for d_model_remainder in range(d_head, 0, -BLOCK_D):
         q_tile = tl.load(
             q_ptr_tile,
-            mask=(rd[None, :] < d_max_offset) & q_ctx_in_bounds[:, None],
+            mask=(rd[None, :] < d_model_remainder) & q_ctx_in_bounds[:, None],
             other=0.0,
         )
         k_tile = tl.load(
             k_ptr_tile,
-            mask=(rd[:, None] < d_max_offset) & k_ctx_in_bounds[None, :],
+            mask=(rd[:, None] < d_model_remainder) & k_ctx_in_bounds[None, :],
             other=0.0,
         )
 
@@ -130,6 +136,7 @@ def _qk_dotprod_kernel(
         rq_out[:, None] * stride_out_q
         + rk_out[None, :] * stride_out_k
         + out_seq_idx * stride_out_seq
+        + out_head_idx * stride_out_head
     )
     scores_ptr_tile = scores_ptr + scores_offset_tile
 
