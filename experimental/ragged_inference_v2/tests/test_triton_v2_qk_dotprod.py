@@ -55,7 +55,9 @@ def test_ragged_qk_dotprod(shape, dtype):
     a = torch.randn(shape, dtype=dtype, device="cuda")
     b = torch.randn(shape, dtype=dtype, device="cuda")
 
-    lut = RaggedQkPidLookupTable.from_single_seq(n_ctx_q=shape[0], n_ctx_k=shape[0])
+    lut = RaggedQkPidLookupTable.from_single_seq_and_head(
+        n_ctx_q=shape[0], n_ctx_k=shape[0]
+    )
     out = ragged_single_seq_qk_dotprod(a, b, lut)
 
     torch_out = qk_dotprod_single_head_pytorch(a, b)
@@ -73,7 +75,7 @@ def test_ragged_qk_dotprod_perf():
         (active_and_cached_tokens, d_head), dtype=torch.bfloat16, device="cuda"
     )
 
-    lut = RaggedQkPidLookupTable.from_single_seq(
+    lut = RaggedQkPidLookupTable.from_single_seq_and_head(
         n_ctx_q=active_tokens, n_ctx_k=active_and_cached_tokens
     )
 

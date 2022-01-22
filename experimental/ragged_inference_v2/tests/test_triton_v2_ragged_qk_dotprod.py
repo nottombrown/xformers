@@ -27,22 +27,25 @@ def _make_seq_arange(n_ctx: int, start_value: int, d_head: int, n_heads=1):
 
 def test_ragged_qk_dotprod_single_seq():
     d_head = 2
+    n_heads = 2
 
     key = RaggedActivations.from_list(
         [
-            _make_seq(n_ctx=3, value=42, n_heads=1, d_head=d_head),
+            _make_seq(n_ctx=3, value=42, n_heads=n_heads, d_head=d_head),
         ]
     )
     query = RaggedActivations.from_list(
         [
-            _make_seq(n_ctx=4, value=55, n_heads=1, d_head=d_head),
+            _make_seq(n_ctx=4, value=55, n_heads=n_heads, d_head=d_head),
         ]
     )
     torch_scores = scores_via_qk_dotprod(query, key)
     print(f"{torch_scores=}")
 
     lut = RaggedQkPidLookupTable.from_query_and_key_tokens_per_seq(
-        n_ctx_q_per_seq=query.n_ctx_per_seq, n_ctx_k_per_seq=key.n_ctx_per_seq
+        n_ctx_q_per_seq=query.n_ctx_per_seq,
+        n_ctx_k_per_seq=key.n_ctx_per_seq,
+        n_heads=n_heads,
     )
     # "hsqk"
     # (1, 1, 4, 3)
@@ -71,6 +74,7 @@ def test_ragged_qk_dotprod_multiple_seqs_lut():
     lut = RaggedQkPidLookupTable.from_query_and_key_tokens_per_seq(
         n_ctx_q_per_seq=query.n_ctx_per_seq,
         n_ctx_k_per_seq=key.n_ctx_per_seq,
+        n_heads=1,
         block_q_override=2,
         block_k_override=2,
     )
@@ -84,25 +88,27 @@ def test_ragged_qk_dotprod_multiple_seqs_lut():
 
 def test_ragged_qk_dotprod_multiple_seqs():
     d_head = 2
+    n_heads = 3
 
     key = RaggedActivations.from_list(
         [
-            _make_seq_arange(n_ctx=5, start_value=0, d_head=d_head),
-            _make_seq_arange(n_ctx=2, start_value=5, d_head=d_head),
-            _make_seq_arange(n_ctx=3, start_value=7, d_head=d_head),
+            _make_seq_arange(n_ctx=5, start_value=0, n_heads=n_heads, d_head=d_head),
+            _make_seq_arange(n_ctx=2, start_value=5, n_heads=n_heads, d_head=d_head),
+            _make_seq_arange(n_ctx=3, start_value=7, n_heads=n_heads, d_head=d_head),
         ]
     )
     query = RaggedActivations.from_list(
         [
-            _make_seq_arange(n_ctx=3, start_value=0, d_head=d_head),
-            _make_seq_arange(n_ctx=2, start_value=3, d_head=d_head),
-            _make_seq_arange(n_ctx=2, start_value=5, d_head=d_head),
+            _make_seq_arange(n_ctx=3, start_value=0, n_heads=n_heads, d_head=d_head),
+            _make_seq_arange(n_ctx=2, start_value=3, n_heads=n_heads, d_head=d_head),
+            _make_seq_arange(n_ctx=2, start_value=5, n_heads=n_heads, d_head=d_head),
         ]
     )
 
     lut = RaggedQkPidLookupTable.from_query_and_key_tokens_per_seq(
         n_ctx_q_per_seq=query.n_ctx_per_seq,
         n_ctx_k_per_seq=key.n_ctx_per_seq,
+        n_heads=n_heads,
     )
     torch_scores = scores_via_qk_dotprod(query, key)
     scores = ragged_qk_dotprod(query, key, lut)
@@ -117,57 +123,27 @@ def test_ragged_qk_dotprod_multiple_seqs():
         )
 
 
-def test_ragged_qk_dotprod_multiple_seqs_and_heads():
-    d_head = 2
-
-    key = RaggedActivations.from_list(
-        [
-            _make_seq_arange(n_ctx=5, start_value=0, n_heads=2, d_head=d_head),
-            _make_seq_arange(n_ctx=2, start_value=5, n_heads=2, d_head=d_head),
-            _make_seq_arange(n_ctx=3, start_value=7, n_heads=2, d_head=d_head),
-        ]
-    )
-    query = RaggedActivations.from_list(
-        [
-            _make_seq_arange(n_ctx=3, start_value=0, n_heads=2, d_head=d_head),
-            _make_seq_arange(n_ctx=2, start_value=3, n_heads=2, d_head=d_head),
-            _make_seq_arange(n_ctx=2, start_value=5, n_heads=2, d_head=d_head),
-        ]
-    )
-
-    lut = RaggedQkPidLookupTable.from_query_and_key_tokens_per_seq(
-        n_ctx_q_per_seq=query.n_ctx_per_seq,
-        n_ctx_k_per_seq=key.n_ctx_per_seq,
-    )
-    torch_scores = scores_via_qk_dotprod(query, key)
-    scores = ragged_qk_dotprod(query, key, lut)
-
-    for seq_idx, (n_ctx_q, n_ctx_k) in enumerate(
-        zip(key.n_ctx_per_seq, query.n_ctx_per_seq)
-    ):
-        print(f"Checking {seq_idx=}")
-        assert_eq(
-            torch_scores[seq_idx, :n_ctx_q, :n_ctx_k],
-            scores[seq_idx, :n_ctx_q, :n_ctx_k],
-        )
-
-
 def test_ragged_qk_dotprod_multiple_seqs_perf():
     n_q_ctx = 5
     n_seqs = 50
     d_head = 256
     n_k_ctx = 8000
     n_iters = 10
+    n_heads = 6
 
     query = RaggedActivations.from_list(
         [
-            _make_seq_arange(n_ctx=n_q_ctx, start_value=0, d_head=d_head)
+            _make_seq_arange(
+                n_ctx=n_q_ctx, start_value=0, n_heads=n_heads, d_head=d_head
+            )
             for _ in range(n_seqs)
         ]
     )
     key = RaggedActivations.from_list(
         [
-            _make_seq_arange(n_ctx=n_k_ctx, start_value=0, d_head=d_head)
+            _make_seq_arange(
+                n_ctx=n_k_ctx, start_value=0, n_heads=n_heads, d_head=d_head
+            )
             for _ in range(n_seqs)
         ]
     )
@@ -175,6 +151,7 @@ def test_ragged_qk_dotprod_multiple_seqs_perf():
     lut = RaggedQkPidLookupTable.from_query_and_key_tokens_per_seq(
         n_ctx_q_per_seq=query.n_ctx_per_seq,
         n_ctx_k_per_seq=key.n_ctx_per_seq,
+        n_heads=n_heads,
     )
 
     for _ in range(3):
@@ -188,7 +165,7 @@ def test_ragged_qk_dotprod_multiple_seqs_perf():
 
     elapsed_micros = (time.time() - started_at) * 1e6
 
-    bytes_in_keys_per_seq = n_k_ctx * d_head * 2  # 2 from bf16
+    bytes_in_keys_per_seq = n_k_ctx * n_heads * d_head * 2  # 2 from bf16
     bytes_in_keys_total = bytes_in_keys_per_seq * n_seqs
     hbm_bw_bytes_per_gpu = 1555e9  # 1.5TB/s
 
@@ -209,7 +186,7 @@ def test_ragged_qk_dotprod_multiple_seqs_perf():
 
 # Actual
 {micros_per_seq=:.1f}µs per seq
-{micros_per_mb=:.1f}µs per seq
+{micros_per_mb=:.1f}µs per mb
 
 {micros_per_seq/expected_micros_per_seq:.1f}x the expected HBM-bandwidth bound time
 """

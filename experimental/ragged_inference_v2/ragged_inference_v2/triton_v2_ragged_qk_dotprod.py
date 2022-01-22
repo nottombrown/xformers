@@ -5,7 +5,6 @@ import torch
 import triton
 import triton.language as tl
 from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
-from ragged_inference_v2.test_utils import assert_eq
 from triton.ops.matmul_perf_model import estimate_matmul_time, prune_num_stages
 
 
@@ -51,12 +50,14 @@ def _qk_dotprod_kernel(
     pid_to_out_q_block_ptr,
     pid_to_out_k_block_ptr,
     pid_to_out_seq_idx_ptr,
+    pid_to_out_head_idx_ptr,
     # Integers
     max_n_ctx_q_across_seqs,
     max_n_ctx_k_across_seqs,
     d_head,
     stride_ctx_q,
     stride_ctx_k,
+    stride_in_head,
     stride_out_head,
     stride_out_seq,
     stride_out_q,
@@ -97,11 +98,11 @@ def _qk_dotprod_kernel(
 
     rd = tl.arange(0, BLOCK_D)  # rd indexes into the d_head dimension
 
-    # head_offset = out_head_idx * stride_in_head
+    head_offset = out_head_idx * stride_in_head
 
     # We use broadcasting to convert our 1D ranges into 2D tiles
-    q_ptr_tile = q_ptr + (rq[:, None] * stride_ctx_q + rd[None, :])  # + head_offset
-    k_ptr_tile = k_ptr + (rk[None, :] * stride_ctx_k + rd[:, None])  # + head_offset
+    q_ptr_tile = q_ptr + (rq[:, None] * stride_ctx_q + rd[None, :]) + head_offset
+    k_ptr_tile = k_ptr + (rk[None, :] * stride_ctx_k + rd[:, None]) + head_offset
 
     # We track the amount of the full d_model that we haven't yet accumulated and
     # decrease it each block. Then if d_model isn't divisible by BLOCK_D, it allows
@@ -158,10 +159,13 @@ class RaggedQkPidLookupTable:
     pid_to_out_q_block: torch.Tensor
     pid_to_out_k_block: torch.Tensor
     pid_to_out_seq_idx: torch.Tensor
+    pid_to_out_head_idx: torch.Tensor
     n_pids_total: int
 
     @staticmethod
-    def from_single_seq(n_ctx_q: int, n_ctx_k: int) -> "RaggedQkPidLookupTable":
+    def from_single_seq_and_head(
+        n_ctx_q: int, n_ctx_k: int
+    ) -> "RaggedQkPidLookupTable":
         grid_q = triton.cdiv(n_ctx_q, BLOCK_Q)
         grid_k = triton.cdiv(n_ctx_k, BLOCK_K)
         n_pids_total = grid_q * grid_k
@@ -194,6 +198,9 @@ class RaggedQkPidLookupTable:
             pid_to_out_q_block=pid_to_out_q_block,
             pid_to_out_k_block=pid_to_out_k_block,
             pid_to_out_seq_idx=pid_to_out_seq_idx,
+            pid_to_out_head_idx=torch.zeros(
+                n_pids_total, dtype=torch.int32, device="cuda"
+            ),
             n_pids_total=n_pids_total,
         )
 
@@ -201,6 +208,7 @@ class RaggedQkPidLookupTable:
     def from_query_and_key_tokens_per_seq(
         n_ctx_q_per_seq: List[int],
         n_ctx_k_per_seq: List[int],
+        n_heads: int,
         block_q_override: Optional[int] = None,
         block_k_override: Optional[int] = None,
     ) -> "RaggedQkPidLookupTable":
@@ -212,6 +220,7 @@ class RaggedQkPidLookupTable:
         pid_to_out_q_block = []
         pid_to_out_k_block = []
         pid_to_out_seq_idx = []
+        pid_to_out_head_idx = []
 
         n_in_q_token_so_far = 0
         n_in_k_token_so_far = 0
@@ -231,11 +240,17 @@ class RaggedQkPidLookupTable:
                 in_q_token_offset = q_block_idx * block_q
                 in_k_token_offset = k_block_idx * block_k
 
-                pid_to_out_q_block.append(q_block_idx)
-                pid_to_out_k_block.append(k_block_idx)
-                pid_to_in_q_token_offset.append(in_q_token_offset + n_in_q_token_so_far)
-                pid_to_in_k_token_offset.append(in_k_token_offset + n_in_k_token_so_far)
-                pid_to_out_seq_idx.append(seq_idx)
+                for head_idx in range(n_heads):
+                    pid_to_out_q_block.append(q_block_idx)
+                    pid_to_out_k_block.append(k_block_idx)
+                    pid_to_in_q_token_offset.append(
+                        in_q_token_offset + n_in_q_token_so_far
+                    )
+                    pid_to_in_k_token_offset.append(
+                        in_k_token_offset + n_in_k_token_so_far
+                    )
+                    pid_to_out_seq_idx.append(seq_idx)
+                    pid_to_out_head_idx.append(head_idx)
 
             n_in_q_token_so_far += n_ctx_q
             n_in_k_token_so_far += n_ctx_k
@@ -247,6 +262,7 @@ class RaggedQkPidLookupTable:
             pid_to_out_q_block=torch.tensor(pid_to_out_q_block, **args),
             pid_to_out_k_block=torch.tensor(pid_to_out_k_block, **args),
             pid_to_out_seq_idx=torch.tensor(pid_to_out_seq_idx, **args),
+            pid_to_out_head_idx=torch.tensor(pid_to_out_head_idx, **args),
             n_pids_total=len(pid_to_in_q_token_offset),
         )
 
@@ -320,14 +336,11 @@ def ragged_qk_dotprod(
     total_ctx_k_across_all_seqs, n_heads_k, d_head_k = key.raw_tensor.shape
     assert d_head == d_head_k, f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
     assert n_heads == n_heads_k, f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
+    assert query.n_seqs == key.n_seqs
 
     # allocates output
-    max_n_ctx_q_across_seqs = query.max_n_ctx_per_seq
-    assert_eq(n_heads, 1)  # not supported
-
-    assert query.n_seqs == key.n_seqs
     # TODO: flag use zeros for garbage
-    scores_out = torch.ones(
+    scores_out = torch.empty(
         (n_heads, query.n_seqs, query.max_n_ctx_per_seq, key.max_n_ctx_per_seq),
         device=device,
         dtype=query.dtype,
@@ -349,12 +362,14 @@ def ragged_qk_dotprod(
         pid_to_out_q_block_ptr=lut.pid_to_out_q_block,
         pid_to_out_k_block_ptr=lut.pid_to_out_k_block,
         pid_to_out_seq_idx_ptr=lut.pid_to_out_seq_idx,
+        pid_to_out_head_idx_ptr=lut.pid_to_out_head_idx,
         # Integers
         max_n_ctx_q_across_seqs=query.max_n_ctx_per_seq,
         max_n_ctx_k_across_seqs=key.max_n_ctx_per_seq,
         d_head=d_head,
         stride_ctx_q=query.raw_tensor.stride(0),
         stride_ctx_k=key.raw_tensor.stride(0),
+        stride_in_head=key.raw_tensor.stride(1),
         stride_out_head=scores_out.stride(0),
         stride_out_seq=scores_out.stride(1),
         stride_out_q=scores_out.stride(2),
