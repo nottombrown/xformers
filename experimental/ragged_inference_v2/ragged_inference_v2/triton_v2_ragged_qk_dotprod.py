@@ -5,6 +5,7 @@ import torch
 import triton
 import triton.language as tl
 from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
+from ragged_inference_v2.test_utils import assert_eq
 from triton.ops.matmul_perf_model import estimate_matmul_time, prune_num_stages
 
 
@@ -296,23 +297,30 @@ def ragged_single_seq_qk_dotprod(
 def ragged_qk_dotprod(
     query: RaggedActivations, key: RaggedActivations, lut: RaggedQkPidLookupTable
 ) -> torch.Tensor:
+    """
+    outputs scores with dimensions "hsqk" (heads, seqs, q_ctx, k_ctx)
+    """
     device = query.device
 
     assert query.raw_tensor.is_contiguous()
     assert key.raw_tensor.is_contiguous()
 
     # check constraints
-    total_ctx_q_across_all_seqs, d_head = query.raw_tensor.shape
-    total_ctx_k_across_all_seqs, d_head_k = key.raw_tensor.shape
-    assert d_head == d_head_k, f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
+    total_ctx_q_across_all_seqs, n_heads, d_head = query.raw_tensor.shape
+    total_ctx_k_across_all_seqs, n_heads_k, d_head_k = key.raw_tensor.shape
+    assert (
+        d_head == d_head_k == lut.d_head
+    ), f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
+    assert n_heads == n_heads_k, f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
 
     # allocates output
     max_n_ctx_q_across_seqs = query.max_n_ctx_per_seq
+    assert_eq(n_heads, 1)
 
     assert query.n_seqs == key.n_seqs
     # TODO: flag use zeros for garbage
     scores_out = torch.ones(
-        (query.n_seqs, query.max_n_ctx_per_seq, key.max_n_ctx_per_seq),
+        (n_heads, query.n_seqs, query.max_n_ctx_per_seq, key.max_n_ctx_per_seq),
         device=device,
         dtype=query.dtype,
     )

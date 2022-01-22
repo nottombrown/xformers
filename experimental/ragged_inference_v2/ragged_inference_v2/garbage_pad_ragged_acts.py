@@ -13,6 +13,7 @@ from ragged_inference_v2.test_utils import assert_eq
 
 class RaggedActivations:
     def __init__(self, raw_tensor: torch.Tensor, n_ctx_per_seq: List[int]):
+        assert_eq(raw_tensor.ndim, 3)
         self.raw_tensor = raw_tensor
         self.n_ctx_per_seq = n_ctx_per_seq
 

@@ -14,8 +14,8 @@ from ragged_inference_v2.triton_v2_ragged_qk_dotprod import (
 )
 
 
-def _make_seq(n_ctx: int, value: int, d_head: int):
-    return torch.full([n_ctx, d_head], value, **bf16_cuda())
+def _make_seq(n_ctx: int, value: int, n_heads: int = 3, d_head: int = 2):
+    return torch.full([n_ctx, n_heads, d_head], value, **bf16_cuda())
 
 
 def _make_seq_arange(n_ctx: int, start_value: int, d_head: int, n_heads=1):
@@ -30,12 +30,12 @@ def test_ragged_qk_dotprod_single_seq():
 
     key = RaggedActivations.from_list(
         [
-            _make_seq(n_ctx=3, value=42, d_head=d_head),
+            _make_seq(n_ctx=3, value=42, n_heads=1, d_head=d_head),
         ]
     )
     query = RaggedActivations.from_list(
         [
-            _make_seq(n_ctx=4, value=55, d_head=d_head),
+            _make_seq(n_ctx=4, value=55, n_heads=1, d_head=d_head),
         ]
     )
     torch_scores = scores_via_qk_dotprod(query, key)
