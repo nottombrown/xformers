@@ -304,10 +304,10 @@ def test_calculate_scores_via_qk_dotprod_throughput(
 
 """
 # Run tests with the following
-pytest -vsx tests/ragged_inference/test_seq_kv_cache.py
+pytest -vsx tests/test_seq_kv_cache.py
 
 
 # Profile with the following
-pytest -vsx tests/ragged_inference/test_seq_kv_cache.py -k test_calculate_scores_via_qk_dotprod_throughput
+pytest -vsx tests/test_seq_kv_cache.py -k test_calculate_scores_via_qk_dotprod_throughput
 
 """
