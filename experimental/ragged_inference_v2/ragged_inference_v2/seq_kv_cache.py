@@ -4,7 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 
 
-import time
 from functools import lru_cache
 from typing import List, Tuple
 
@@ -15,7 +14,9 @@ from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 
 class SingleSeqKVCache:
     def __init__(self, keys: torch.Tensor, values: torch.Tensor):
-        # Tensor of shape [2, n_ctx, d_model_per_gpu]
+        assert_eq(keys.ndim, 3)
+        assert_eq(values.ndim, 3)
+        # Tensor of shape [n_ctx, n_heads, n_dim]
         # - keys are cache[0]
         # - values are cache[1]
         self.raw_keys = keys
@@ -38,6 +39,10 @@ class SingleSeqKVCache:
         return self.raw_values.shape[-1]
 
     @property
+    def n_heads(self):
+        return self.raw_values.shape[-2]
+
+    @property
     def is_cuda(self):
         return self.raw_values.is_cuda
 
@@ -46,10 +51,10 @@ class SingleSeqKVCache:
         return self.raw_values.dtype
 
 
-def _single_seq_kv_cache(n_ctx, value, d_model) -> SingleSeqKVCache:
+def _single_seq_kv_cache(n_ctx, value, n_heads, d_per_head) -> SingleSeqKVCache:
     return SingleSeqKVCache(
-        keys=torch.full([n_ctx, d_model], value, **bf16_cuda()),
-        values=torch.full([n_ctx, d_model], value, **bf16_cuda()),
+        keys=torch.full([n_ctx, n_heads, d_per_head], value, **bf16_cuda()),
+        values=torch.full([n_ctx, n_heads, d_per_head], value, **bf16_cuda()),
     )
 
 
@@ -81,6 +86,7 @@ def garbage_pad_seq_kv_cache(
     assert seq_kv_cache[0].is_cuda
     dtype = seq_kv_cache[0].dtype
     n_ctx_per_kv_cache = [seq.n_ctx for seq in seq_kv_cache]
+    assert_eq(seq_kv_cache.raw_tensor.ndim, 3)
 
     # Create a view so that the output is (n_seqs, n_ctx_max, d_model)
     # This should not incur an extra memcopy
@@ -104,16 +110,17 @@ def garbage_pad_seq_kv_cache(
     )
 
     for seq_idx, seq in enumerate(seq_kv_cache):
-        padded_keys[seq_idx, : seq.n_ctx, :] = seq.keys
-        padded_values[seq_idx, : seq.n_ctx, :] = seq.values
+        padded_keys[seq_idx, seq.n_ctx, :, :] = seq.keys
+        padded_values[seq_idx, seq.n_ctx, :, :] = seq.values
     return (padded_keys, padded_values)
 
 
 def garbage_pad_keys(
     seq_kv_cache: List[SingleSeqKVCache],
 ) -> torch.Tensor:
-    assert seq_kv_cache[0].is_cuda
-    dtype = seq_kv_cache[0].dtype
+    single_seq_kv_cache = seq_kv_cache[0]
+    assert single_seq_kv_cache.is_cuda
+    dtype = single_seq_kv_cache.dtype
     n_ctx_per_kv_cache = [seq.n_ctx for seq in seq_kv_cache]
 
     # Create a view so that the output is (n_seqs, n_ctx_max, d_model)
@@ -124,13 +131,14 @@ def garbage_pad_keys(
     padded_keys = torch.empty(
         n_seqs,
         n_ctx_max,
-        seq_kv_cache[0].d_model_per_gpu,
+        single_seq_kv_cache.n_heads,
+        single_seq_kv_cache.d_model_per_gpu,
         dtype=dtype,
         device="cuda",
     )
 
     for seq_idx, seq in enumerate(seq_kv_cache):
-        padded_keys[seq_idx, : seq.n_ctx, :] = seq.keys
+        padded_keys[seq_idx, : seq.n_ctx, :, :] = seq.keys
     return padded_keys
 
 
@@ -159,7 +167,7 @@ def calculate_scores_via_qk_dotprod(
 ) -> torch.Tensor:
     padded_keys = garbage_pad_keys(seq_kv_cache)
     padded_active_queries = active_queries.to_garbage_padded()
-    return torch.einsum("bkd,bqd->bqk", padded_keys, padded_active_queries)
+    return torch.einsum("skhd,sqhd->sqhk", padded_keys, padded_active_queries)
 
 
 def scores_via_qk_dotprod(
@@ -168,4 +176,4 @@ def scores_via_qk_dotprod(
 ) -> torch.Tensor:
     padded_query = query.to_garbage_padded()
     padded_key = key.to_garbage_padded()
-    return torch.einsum("bkd,bqd->bqk", padded_key, padded_query)
+    return torch.einsum("skhd,sqhd->sqhk", padded_key, padded_query)

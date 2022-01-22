@@ -18,9 +18,9 @@ def _make_seq(n_ctx: int, value: int, d_head: int):
     return torch.full([n_ctx, d_head], value, **bf16_cuda())
 
 
-def _make_seq_arange(n_ctx: int, start_value: int, d_head: int):
+def _make_seq_arange(n_ctx: int, start_value: int, d_head: int, n_heads=1):
     return (
-        torch.full([n_ctx, d_head], start_value, **bf16_cuda())
+        torch.full([n_ctx, n_heads, d_head], start_value, **bf16_cuda())
         + torch.arange(n_ctx, **bf16_cuda())[:, None]
     )
 
@@ -96,6 +96,41 @@ def test_ragged_qk_dotprod_multiple_seqs():
             _make_seq_arange(n_ctx=3, start_value=0, d_head=d_head),
             _make_seq_arange(n_ctx=2, start_value=3, d_head=d_head),
             _make_seq_arange(n_ctx=2, start_value=5, d_head=d_head),
+        ]
+    )
+
+    lut = RaggedQkPidLookupTable.from_query_and_key_tokens_per_seq(
+        n_ctx_q_per_seq=query.n_ctx_per_seq,
+        n_ctx_k_per_seq=key.n_ctx_per_seq,
+    )
+    torch_scores = scores_via_qk_dotprod(query, key)
+    scores = ragged_qk_dotprod(query, key, lut)
+
+    for seq_idx, (n_ctx_q, n_ctx_k) in enumerate(
+        zip(key.n_ctx_per_seq, query.n_ctx_per_seq)
+    ):
+        print(f"Checking {seq_idx=}")
+        assert_eq(
+            torch_scores[seq_idx, :n_ctx_q, :n_ctx_k],
+            scores[seq_idx, :n_ctx_q, :n_ctx_k],
+        )
+
+
+def test_ragged_qk_dotprod_multiple_seqs_and_heads():
+    d_head = 2
+
+    key = RaggedActivations.from_list(
+        [
+            _make_seq_arange(n_ctx=5, start_value=0, n_heads=2, d_head=d_head),
+            _make_seq_arange(n_ctx=2, start_value=5, n_heads=2, d_head=d_head),
+            _make_seq_arange(n_ctx=3, start_value=7, n_heads=2, d_head=d_head),
+        ]
+    )
+    query = RaggedActivations.from_list(
+        [
+            _make_seq_arange(n_ctx=3, start_value=0, n_heads=2, d_head=d_head),
+            _make_seq_arange(n_ctx=2, start_value=3, n_heads=2, d_head=d_head),
+            _make_seq_arange(n_ctx=2, start_value=5, n_heads=2, d_head=d_head),
         ]
     )
 
