@@ -182,5 +182,5 @@ def test_ragged_qk_dotprod_multiple_seqs_perf():
 
 
 """
-pytest -vxs --tb=native tests/ragged_inference/test_triton_v2_ragged_qk_dotprod.py -k test_ragged_qk_dotprod_multiple_seqs_perf
+pytest -vxs --tb=native tests/test_triton_v2_ragged_qk_dotprod.py -k test_ragged_qk_dotprod_multiple_seqs_perf
 """
