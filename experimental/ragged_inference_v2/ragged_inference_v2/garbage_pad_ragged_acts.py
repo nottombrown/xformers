@@ -84,7 +84,6 @@ def get_acts_offset_per_seq(n_ctx_per_seq):
     return ragged_acts_offset_per_seq
 
 
-print("THIS IS LOADING")
 """
 
 # TODO: Build LUT

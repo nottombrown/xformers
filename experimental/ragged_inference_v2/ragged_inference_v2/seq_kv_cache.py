@@ -5,7 +5,7 @@
 
 
 from functools import lru_cache
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
@@ -13,9 +13,12 @@ from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 
 
 class SingleSeqKVCache:
-    def __init__(self, keys: torch.Tensor, values: torch.Tensor):
-        assert_eq(keys.ndim, 3)
-        assert_eq(values.ndim, 3)
+    def __init__(self, keys: Optional[torch.Tensor], values: Optional[torch.Tensor]):
+
+        if keys is not None and values is not None:
+            assert_eq(keys.ndim, 3)
+            assert_eq(values.ndim, 3)
+
         # Tensor of shape [n_ctx, n_heads, n_dim]
         # - keys are cache[0]
         # - values are cache[1]
@@ -32,7 +35,13 @@ class SingleSeqKVCache:
 
     @property
     def n_ctx(self):
+        if self.is_empty:
+            return 0
         return self.raw_values.shape[0]
+
+    @property
+    def is_empty(self):
+        return self.raw_keys is None
 
     @property
     def d_model_per_gpu(self):
@@ -50,6 +59,19 @@ class SingleSeqKVCache:
     def dtype(self):
         return self.raw_values.dtype
 
+    def extend_in_place(self, new_keys: torch.Tensor, new_values: torch.Tensor):
+
+        assert_eq(new_keys.ndim, 3)
+        assert_eq(new_values.ndim, 3)
+
+        if self.n_ctx == 0:
+            self.raw_keys = new_keys.contiguous()
+            self.raw_values = new_values.contiguous()
+        else:
+            # Dim 1 is the context
+            self.raw_keys = torch.cat([self.keys, new_keys], dim=0)
+            self.raw_values = torch.cat([self.values, new_values], dim=0)
+
 
 def _single_seq_kv_cache(n_ctx, value, n_heads, d_per_head) -> SingleSeqKVCache:
     return SingleSeqKVCache(
@@ -58,26 +80,17 @@ def _single_seq_kv_cache(n_ctx, value, n_heads, d_per_head) -> SingleSeqKVCache:
     )
 
 
-def extend_kv_caches(
-    seq_kv_cache: List[SingleSeqKVCache],
+def extend_kv_caches_in_place(
+    seq_kv_caches: List[SingleSeqKVCache],
     active_keys: RaggedActivations,
     active_values: RaggedActivations,
-) -> List[SingleSeqKVCache]:
-    assert seq_kv_cache[0].is_cuda
-
-    updated_seq_kv_cache = []
+) -> None:
     for cache, keys, values in zip(
-        seq_kv_cache, active_keys.iter_full_tensors(), active_values.iter_full_tensors()
+        seq_kv_caches,
+        active_keys.iter_full_tensors(),
+        active_values.iter_full_tensors(),
     ):
-
-        # Dim 1 is the context
-        new_cache = SingleSeqKVCache(
-            keys=torch.cat([cache.keys, keys], dim=0),
-            values=torch.cat([cache.values, values], dim=0),
-        )
-        updated_seq_kv_cache.append(new_cache)
-
-    return updated_seq_kv_cache
+        cache.extend_in_place(keys, values)
 
 
 def garbage_pad_seq_kv_cache(

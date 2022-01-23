@@ -12,7 +12,7 @@ from ragged_inference_v2.seq_kv_cache import (
     _create_indices,
     _single_seq_kv_cache,
     calculate_scores_via_qk_dotprod,
-    extend_kv_caches,
+    extend_kv_caches_in_place,
 )
 from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 
@@ -20,7 +20,7 @@ from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 def test_extend_kv_caches_correctness():
     d_head = 6
     n_heads = 2
-    seq_kv_cache = [
+    seq_kv_caches = [
         _single_seq_kv_cache(n_ctx=1, value=33, n_heads=n_heads, d_per_head=d_head),
         _single_seq_kv_cache(n_ctx=3, value=42, n_heads=n_heads, d_per_head=d_head),
         _single_seq_kv_cache(n_ctx=7, value=55, n_heads=n_heads, d_per_head=d_head),
@@ -42,16 +42,16 @@ def test_extend_kv_caches_correctness():
         ]
     )
 
-    new_cache = extend_kv_caches(seq_kv_cache, active_keys, active_values)
+    extend_kv_caches_in_place(seq_kv_caches, active_keys, active_values)
 
-    assert_eq(new_cache[0].keys[:, 0, 0].cpu(), [33, 1])
-    assert_eq(new_cache[0].values[:, 0, 0].cpu(), [33, 2])
+    assert_eq(seq_kv_caches[0].keys[:, 0, 0].cpu(), [33, 1])
+    assert_eq(seq_kv_caches[0].values[:, 0, 0].cpu(), [33, 2])
 
-    assert_eq(new_cache[1].keys[:, 0, 0].cpu(), [42, 42, 42, 1])
-    assert_eq(new_cache[1].values[:, 0, 0].cpu(), [42, 42, 42, 2])
+    assert_eq(seq_kv_caches[1].keys[:, 0, 0].cpu(), [42, 42, 42, 1])
+    assert_eq(seq_kv_caches[1].values[:, 0, 0].cpu(), [42, 42, 42, 2])
 
-    assert_eq(new_cache[2].keys[:, 0, 0].cpu(), [55, 55, 55, 55, 55, 55, 55, 1])
-    assert_eq(new_cache[2].values[:, 0, 0].cpu(), [55, 55, 55, 55, 55, 55, 55, 2])
+    assert_eq(seq_kv_caches[2].keys[:, 0, 0].cpu(), [55, 55, 55, 55, 55, 55, 55, 1])
+    assert_eq(seq_kv_caches[2].values[:, 0, 0].cpu(), [55, 55, 55, 55, 55, 55, 55, 2])
 
 
 def test_index_select_throughput():

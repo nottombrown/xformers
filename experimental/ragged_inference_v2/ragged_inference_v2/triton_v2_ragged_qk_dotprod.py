@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from functools import lru_cache
+from typing import Optional, Tuple
 
 import torch
 import triton
@@ -205,9 +206,10 @@ class RaggedQkPidLookupTable:
         )
 
     @staticmethod
+    @lru_cache(maxsize=4)
     def from_query_and_key_tokens_per_seq(
-        n_ctx_q_per_seq: List[int],
-        n_ctx_k_per_seq: List[int],
+        n_ctx_q_per_seq: Tuple[int],
+        n_ctx_k_per_seq: Tuple[int],
         n_heads: int,
         block_q_override: Optional[int] = None,
         block_k_override: Optional[int] = None,
