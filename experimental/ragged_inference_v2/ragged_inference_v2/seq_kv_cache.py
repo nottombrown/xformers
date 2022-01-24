@@ -99,27 +99,26 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
 
         # Slices into the raw_keys and raw_values buffer
 
-        self._buffer_slice_start_idx = 0
-        self._buffer_slice_end_idx = 0
+        self._buffer_slice_start = 0
+        self._buffer_slice_end = 0
 
     @property
     def keys(self) -> torch.Tensor:
-        return self._raw_keys[self._buffer_slice_start_idx : self._buffer_slice_end_idx]
+        return self._raw_keys[self._buffer_slice_start : self._buffer_slice_end]
 
     @property
     def values(self) -> torch.Tensor:
-        return self._raw_values[
-            self._buffer_slice_start_idx : self._buffer_slice_end_idx
-        ]
+        return self._raw_values[self._buffer_slice_start : self._buffer_slice_end]
 
     def extend_in_place(self, new_keys: torch.Tensor, new_values: torch.Tensor):
+        raise NotImplementedError("Use extend_in_place_and_return_all instead")
+
+    def extend_in_place_and_return_all(
+        self, new_keys: torch.Tensor, new_values: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         assert_eq(new_keys.ndim, 3)
         assert_eq(new_values.ndim, 3)
         n_ctx_from_new_keys, n_heads, d_head = new_keys.shape
-
-        # We can't take more than the local_ctx b/c we'd just immediately want to
-        # throw them out
-        n_ctx_from_new_keys = min(n_ctx_from_new_keys, self.local_ctx)
 
         buffer_n_ctx = math.ceil(1.5 * self.local_ctx)
         kwargs = dict(device=new_keys.device, dtype=new_keys.dtype)
@@ -130,40 +129,41 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
             # Need to use zeros for the values
             self._raw_values = torch.zeros(buffer_n_ctx, n_heads, d_head, **kwargs)
 
-        old_n_ctx = self.n_ctx
-        new_n_ctx = n_ctx_from_new_keys + old_n_ctx
+        buffer_end_after_adding = self._buffer_slice_end + n_ctx_from_new_keys
+        will_fit = buffer_end_after_adding <= buffer_n_ctx
+        if will_fit:
+            slice_for_new = slice(self._buffer_slice_end, buffer_end_after_adding)
+            self._raw_keys[slice_for_new] = new_keys
+            self._raw_values[slice_for_new] = new_values
 
-        new_buffer_end_idx = self._buffer_slice_end_idx + n_ctx_from_new_keys
-        new_buffer_start_idx = max(0, new_buffer_end_idx - self.local_ctx)
+            slice_for_all = slice(self._buffer_slice_start, buffer_end_after_adding)
+            all_keys = self._raw_keys[slice_for_all]
+            all_values = self._raw_values[slice_for_all]
 
-        if new_buffer_end_idx > buffer_n_ctx:
-            # shift everything to the left
+            self._buffer_slice_end = buffer_end_after_adding
+            self._buffer_slice_start = max(0, self._buffer_slice_end - self.local_ctx)
+        else:
+            old_slice = slice(self._buffer_slice_start, self._buffer_slice_end)
+            all_keys = torch.cat([self._raw_keys[old_slice], new_keys])
+            all_values = torch.cat([self._raw_values[old_slice], new_values])
 
-            old_keys = self._raw_keys[new_buffer_start_idx:]
-            old_values = self._raw_values[new_buffer_start_idx:]
+            trailing_n_ctx = buffer_n_ctx - self.local_ctx
 
             # Can be empty because it's sent to our triton op
-            self._raw_keys = torch.empty(buffer_n_ctx, n_heads, d_head, **kwargs)
+            trailing_keys = torch.empty(trailing_n_ctx, n_heads, d_head, **kwargs)
             # Need to use zeros for the values
-            self._raw_values = torch.zeros(buffer_n_ctx, n_heads, d_head, **kwargs)
+            trailing_values = torch.zeros(trailing_n_ctx, n_heads, d_head, **kwargs)
 
-            self._raw_keys[: old_keys.shape[0]] = old_keys
-            self._raw_values[: old_values.shape[0]] = old_values
+            assert all_keys.shape[0] > self.local_ctx
+            self._raw_keys = torch.cat([all_keys[: self.local_ctx], trailing_keys])
+            self._raw_values = torch.cat(
+                [all_values[: self.local_ctx], trailing_values]
+            )
 
-            new_buffer_end_idx -= new_buffer_start_idx
-            new_buffer_start_idx -= new_buffer_start_idx
+            self._buffer_slice_start = 0
+            self._buffer_slice_end = self.local_ctx
 
-        self._raw_keys[
-            new_buffer_end_idx - n_ctx_from_new_keys : new_buffer_end_idx
-        ] = new_keys[-self.local_ctx :]
-        self._raw_values[
-            new_buffer_end_idx - n_ctx_from_new_keys : new_buffer_end_idx
-        ] = new_values[-self.local_ctx :]
-
-        self._buffer_slice_start_idx = new_buffer_start_idx
-        self._buffer_slice_end_idx = new_buffer_end_idx
-
-        self._n_ctx = new_n_ctx
+        return all_keys, all_values
 
 
 def _new_kvs(n_ctx, value, n_heads, d_per_head) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -183,6 +183,19 @@ def extend_kv_caches_in_place(
         active_values.iter_full_tensors(),
     ):
         cache.extend_in_place(keys, values)
+
+
+def extend_local_kv_caches_in_place(
+    seq_kv_caches: List[LocalSingleSeqKVCache],
+    active_keys: RaggedActivations,
+    active_values: RaggedActivations,
+) -> None:
+    for cache, keys, values in zip(
+        seq_kv_caches,
+        active_keys.iter_full_tensors(),
+        active_values.iter_full_tensors(),
+    ):
+        cache.extend_in_place_and_return_all(keys, values)
 
 
 def garbage_pad_seq_kv_cache(

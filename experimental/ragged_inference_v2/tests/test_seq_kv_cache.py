@@ -14,6 +14,7 @@ from ragged_inference_v2.seq_kv_cache import (
     _new_kvs,
     calculate_scores_via_qk_dotprod,
     extend_kv_caches_in_place,
+    extend_local_kv_caches_in_place,
 )
 from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 
@@ -57,7 +58,7 @@ def test_extend_kv_caches_correctness():
     assert_eq(seq_kv_caches[2].values[:, 0, 0].cpu(), [55, 55, 55, 55, 55, 55, 55, 2])
 
 
-def test_extend_local_kv_caches_correctness():
+def test_local_kv_caches_extend_in_place_and_return_all_correctness():
     d_head = 6
     n_heads = 2
     n_seqs = 3
@@ -65,9 +66,15 @@ def test_extend_local_kv_caches_correctness():
     seq_kv_caches = [LocalSingleSeqKVCache(local_ctx=local_ctx) for _ in range(n_seqs)]
     kwargs = dict(n_heads=n_heads, d_per_head=d_head)
 
-    seq_kv_caches[0].extend_in_place(*_new_kvs(n_ctx=1, value=33, **kwargs))
-    seq_kv_caches[1].extend_in_place(*_new_kvs(n_ctx=3, value=42, **kwargs))
-    seq_kv_caches[2].extend_in_place(*_new_kvs(n_ctx=7, value=55, **kwargs))
+    seq_kv_caches[0].extend_in_place_and_return_all(
+        *_new_kvs(n_ctx=1, value=33, **kwargs)
+    )
+    seq_kv_caches[1].extend_in_place_and_return_all(
+        *_new_kvs(n_ctx=3, value=42, **kwargs)
+    )
+    seq_kv_caches[2].extend_in_place_and_return_all(
+        *_new_kvs(n_ctx=7, value=55, **kwargs)
+    )
 
     assert_eq(seq_kv_caches[0].keys[:, 0, 0].cpu(), [33])
     assert_eq(seq_kv_caches[0].values[:, 0, 0].cpu(), [33])
@@ -94,7 +101,7 @@ def test_extend_local_kv_caches_correctness():
         ]
     )
 
-    extend_kv_caches_in_place(seq_kv_caches, active_keys, active_values)
+    extend_local_kv_caches_in_place(seq_kv_caches, active_keys, active_values)
 
     assert_eq(seq_kv_caches[0].keys[:, 0, 0].cpu(), [33, 1])
     assert_eq(seq_kv_caches[0].values[:, 0, 0].cpu(), [33, 2])
