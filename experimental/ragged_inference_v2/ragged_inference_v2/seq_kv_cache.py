@@ -25,7 +25,7 @@ class SingleSeqKVCache:
         self._raw_keys: torch.Tensor = None
         self._raw_values: torch.Tensor = None
 
-        self._n_ctx = 0
+        self._n_ctx = 0  # Total number of tokens appended
 
     @property
     def keys(self) -> torch.Tensor:
@@ -37,6 +37,10 @@ class SingleSeqKVCache:
 
     @property
     def n_ctx(self):
+        """
+        Total number of tokens ever appended. Not the raw_tensor. If it's local for example,
+        this could be more than the raw_tensor
+        """
         return self._n_ctx
 
     @property
@@ -51,30 +55,114 @@ class SingleSeqKVCache:
     def dtype(self):
         return self._raw_values.dtype
 
-    def extend_in_place(self, new_keys: torch.Tensor, new_values: torch.Tensor):
+    @property
+    def _buffer_size(self):
+        return 0 if self.is_empty else self._raw_values.shape[0]
 
+    def extend_in_place(self, new_keys: torch.Tensor, new_values: torch.Tensor):
         assert_eq(new_keys.ndim, 3)
         assert_eq(new_values.ndim, 3)
         n_ctx_from_new_keys, n_heads, d_head = new_keys.shape
 
         old_n_ctx = self.n_ctx
         new_n_ctx = n_ctx_from_new_keys + old_n_ctx
-        minimum_n_ctx = max(new_n_ctx, MIN_N_CTX)
-        n_ctx_after_grow = math.ceil(EXTEND_GROWTH_FACTOR * minimum_n_ctx)
+        target_new_n_ctx = max(new_n_ctx, MIN_N_CTX)
 
-        old_raw_keys = self._raw_keys
-        old_raw_values = self._raw_values
+        should_grow = target_new_n_ctx > self._buffer_size
+        if should_grow:
+            n_ctx_after_grow = math.ceil(EXTEND_GROWTH_FACTOR * target_new_n_ctx)
 
+            old_raw_keys = self._raw_keys
+            old_raw_values = self._raw_values
+
+            kwargs = dict(device=new_keys.device, dtype=new_keys.dtype)
+            self._raw_keys = torch.empty(n_ctx_after_grow, n_heads, d_head, **kwargs)
+            self._raw_values = torch.empty(n_ctx_after_grow, n_heads, d_head, **kwargs)
+
+            if old_raw_keys is not None:
+                self._raw_keys[:old_n_ctx] = old_raw_keys[:old_n_ctx]
+                self._raw_values[:old_n_ctx] = old_raw_values[:old_n_ctx]
+
+            self._raw_keys[old_n_ctx:new_n_ctx] = new_keys
+            self._raw_values[old_n_ctx:new_n_ctx] = new_values
+        else:
+            self._raw_keys[old_n_ctx:new_n_ctx] = new_keys
+            self._raw_values[old_n_ctx:new_n_ctx] = new_values
+
+        self._n_ctx = new_n_ctx
+
+
+class LocalSingleSeqKVCache(SingleSeqKVCache):
+    def __init__(self, local_ctx: int):
+        super().__init__()
+        self.local_ctx = local_ctx
+
+        # Slices into the raw_keys and raw_values buffer
+
+        self._buffer_slice_start_idx = 0
+        self._buffer_slice_end_idx = 0
+
+    @property
+    def keys(self) -> torch.Tensor:
+        return self._raw_keys[self._buffer_slice_start_idx : self._buffer_slice_end_idx]
+
+    @property
+    def values(self) -> torch.Tensor:
+        return self._raw_values[
+            self._buffer_slice_start_idx : self._buffer_slice_end_idx
+        ]
+
+    def extend_in_place(self, new_keys: torch.Tensor, new_values: torch.Tensor):
+        assert_eq(new_keys.ndim, 3)
+        assert_eq(new_values.ndim, 3)
+        n_ctx_from_new_keys, n_heads, d_head = new_keys.shape
+
+        # We can't take more than the local_ctx b/c we'd just immediately want to
+        # throw them out
+        n_ctx_from_new_keys = min(n_ctx_from_new_keys, self.local_ctx)
+
+        buffer_n_ctx = math.ceil(1.5 * self.local_ctx)
         kwargs = dict(device=new_keys.device, dtype=new_keys.dtype)
-        self._raw_keys = torch.empty(n_ctx_after_grow, n_heads, d_head, **kwargs)
-        self._raw_values = torch.empty(n_ctx_after_grow, n_heads, d_head, **kwargs)
 
-        if old_raw_keys is not None:
-            self._raw_keys[:old_n_ctx] = old_raw_keys[:old_n_ctx]
-            self._raw_values[:old_n_ctx] = old_raw_values[:old_n_ctx]
+        if self.is_empty:
+            # Can be empty because it's sent to our triton op
+            self._raw_keys = torch.empty(buffer_n_ctx, n_heads, d_head, **kwargs)
+            # Need to use zeros for the values
+            self._raw_values = torch.zeros(buffer_n_ctx, n_heads, d_head, **kwargs)
 
-        self._raw_keys[old_n_ctx:new_n_ctx] = new_keys
-        self._raw_values[old_n_ctx:new_n_ctx] = new_values
+        old_n_ctx = self.n_ctx
+        new_n_ctx = n_ctx_from_new_keys + old_n_ctx
+
+        new_buffer_end_idx = self._buffer_slice_end_idx + n_ctx_from_new_keys
+        new_buffer_start_idx = max(0, new_buffer_end_idx - self.local_ctx)
+
+        if new_buffer_end_idx > buffer_n_ctx:
+            # shift everything to the left
+
+            old_keys = self._raw_keys[new_buffer_start_idx:]
+            old_values = self._raw_values[new_buffer_start_idx:]
+
+            # Can be empty because it's sent to our triton op
+            self._raw_keys = torch.empty(buffer_n_ctx, n_heads, d_head, **kwargs)
+            # Need to use zeros for the values
+            self._raw_values = torch.zeros(buffer_n_ctx, n_heads, d_head, **kwargs)
+
+            self._raw_keys[: old_keys.shape[0]] = old_keys
+            self._raw_values[: old_values.shape[0]] = old_values
+
+            new_buffer_end_idx -= new_buffer_start_idx
+            new_buffer_start_idx -= new_buffer_start_idx
+
+        self._raw_keys[
+            new_buffer_end_idx - n_ctx_from_new_keys : new_buffer_end_idx
+        ] = new_keys[-self.local_ctx :]
+        self._raw_values[
+            new_buffer_end_idx - n_ctx_from_new_keys : new_buffer_end_idx
+        ] = new_values[-self.local_ctx :]
+
+        self._buffer_slice_start_idx = new_buffer_start_idx
+        self._buffer_slice_end_idx = new_buffer_end_idx
+
         self._n_ctx = new_n_ctx
 
 
