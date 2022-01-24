@@ -9,8 +9,8 @@ import time
 import torch
 from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
 from ragged_inference_v2.seq_kv_cache import (
-    _create_indices,
-    _single_seq_kv_cache,
+    SingleSeqKVCache,
+    _new_kvs,
     calculate_scores_via_qk_dotprod,
     extend_kv_caches_in_place,
 )
@@ -20,11 +20,13 @@ from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 def test_extend_kv_caches_correctness():
     d_head = 6
     n_heads = 2
-    seq_kv_caches = [
-        _single_seq_kv_cache(n_ctx=1, value=33, n_heads=n_heads, d_per_head=d_head),
-        _single_seq_kv_cache(n_ctx=3, value=42, n_heads=n_heads, d_per_head=d_head),
-        _single_seq_kv_cache(n_ctx=7, value=55, n_heads=n_heads, d_per_head=d_head),
-    ]
+    n_seqs = 3
+    seq_kv_caches = [SingleSeqKVCache() for _ in range(3)]
+    kwargs = dict(n_heads=n_heads, d_per_head=d_head)
+
+    seq_kv_caches[0].extend_in_place(*_new_kvs(n_ctx=1, value=33, **kwargs))
+    seq_kv_caches[1].extend_in_place(*_new_kvs(n_ctx=3, value=42, **kwargs))
+    seq_kv_caches[2].extend_in_place(*_new_kvs(n_ctx=7, value=55, **kwargs))
 
     n_ctx_new = 1
     active_keys = RaggedActivations.from_list(
@@ -54,64 +56,23 @@ def test_extend_kv_caches_correctness():
     assert_eq(seq_kv_caches[2].values[:, 0, 0].cpu(), [55, 55, 55, 55, 55, 55, 55, 2])
 
 
-def test_index_select_throughput():
-    n_ctx_per_seq = 8192
-    n_seqs = 100
-    d_model_per_gpu = 12 * 1024 // 8
-
-    keys = _single_seq_kv_cache(
-        n_ctx=n_ctx_per_seq * n_seqs, value=42, n_heads=2, d_per_head=d_model_per_gpu
-    ).keys
-
-    indices = _create_indices(tuple(n_ctx_per_seq for _ in range(n_seqs)))
-
-    for strategy in ["index_select", "slice"]:
-        if strategy == "slice":
-
-            def do_the_op():
-                return keys[indices, :, :]
-
-        elif strategy == "index_select":
-
-            def do_the_op():
-                torch.index_select(input=keys, dim=0, index=indices)
-
-        else:
-            raise ValueError(f"{strategy=}")
-
-        # warmup
-        do_the_op()
-
-        torch.cuda.synchronize()
-        started_at = time.time()
-        n_iters = 10
-        for _ in range(n_iters):
-            do_the_op()
-
-        torch.cuda.synchronize()
-        elapsed_micros = (time.time() - started_at) * 1e6
-        micros_per_mb = elapsed_micros / n_iters
-        micros_per_seq = micros_per_mb / n_seqs
-        print(
-            f"""
-# Speed when {strategy=}
-{micros_per_seq=:.1f}µs per seq
-        """
-        )
-
-
 def test_calculate_scores_via_qk_dotprod_throughput(
     n_key_ctx_per_seq=1024, n_active_query_ctx_per_seq=5
 ):
     n_seqs = 100
     d_per_head = 256
     n_heads = 6
-    seq_kv_cache = [
-        _single_seq_kv_cache(
-            n_ctx=n_key_ctx_per_seq, value=42, n_heads=n_heads, d_per_head=d_per_head
+    seq_kv_cache = [SingleSeqKVCache() for _ in range(n_seqs)]
+
+    for cache in seq_kv_cache:
+        cache.extend_in_place(
+            *_new_kvs(
+                n_ctx=n_key_ctx_per_seq,
+                value=42,
+                n_heads=n_heads,
+                d_per_head=d_per_head,
+            )
         )
-        for _ in range(n_seqs)
-    ]
 
     active_queries = RaggedActivations.from_list(
         [

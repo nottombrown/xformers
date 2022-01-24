@@ -2,82 +2,86 @@
 #
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
-
-
+import math
 from functools import lru_cache
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import torch
 from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
 from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 
+# Whenever we need to grow the tensor, we extend by this amount extra so that we don't
+# have to do expensive memcopies as frequently as we would otherwise
+EXTEND_GROWTH_FACTOR = 1.3
+
+MIN_N_CTX = 64
+
 
 class SingleSeqKVCache:
-    def __init__(self, keys: Optional[torch.Tensor], values: Optional[torch.Tensor]):
-
-        if keys is not None and values is not None:
-            assert_eq(keys.ndim, 3)
-            assert_eq(values.ndim, 3)
-
+    def __init__(self):
         # Tensor of shape [n_ctx, n_heads, n_dim]
         # - keys are cache[0]
         # - values are cache[1]
-        self.raw_keys = keys
-        self.raw_values = values
+        self._raw_keys: torch.Tensor = None
+        self._raw_values: torch.Tensor = None
+
+        self._n_ctx = 0
 
     @property
     def keys(self) -> torch.Tensor:
-        return self.raw_keys
+        return self._raw_keys[: self.n_ctx]
 
     @property
     def values(self) -> torch.Tensor:
-        return self.raw_values
+        return self._raw_values[: self.n_ctx]
 
     @property
     def n_ctx(self):
-        if self.is_empty:
-            return 0
-        return self.raw_values.shape[0]
+        return self._n_ctx
 
     @property
     def is_empty(self):
-        return self.raw_keys is None
-
-    @property
-    def d_model_per_gpu(self):
-        return self.raw_values.shape[-1]
-
-    @property
-    def n_heads(self):
-        return self.raw_values.shape[-2]
+        return self._raw_keys is None
 
     @property
     def is_cuda(self):
-        return self.raw_values.is_cuda
+        return self._raw_values.is_cuda
 
     @property
     def dtype(self):
-        return self.raw_values.dtype
+        return self._raw_values.dtype
 
     def extend_in_place(self, new_keys: torch.Tensor, new_values: torch.Tensor):
 
         assert_eq(new_keys.ndim, 3)
         assert_eq(new_values.ndim, 3)
+        n_ctx_from_new_keys, n_heads, d_head = new_keys.shape
 
-        if self.n_ctx == 0:
-            self.raw_keys = new_keys.contiguous()
-            self.raw_values = new_values.contiguous()
-        else:
-            # Dim 1 is the context
-            self.raw_keys = torch.cat([self.keys, new_keys], dim=0)
-            self.raw_values = torch.cat([self.values, new_values], dim=0)
+        old_n_ctx = self.n_ctx
+        new_n_ctx = n_ctx_from_new_keys + old_n_ctx
+        minimum_n_ctx = max(new_n_ctx, MIN_N_CTX)
+        n_ctx_after_grow = math.ceil(EXTEND_GROWTH_FACTOR * minimum_n_ctx)
+
+        old_raw_keys = self._raw_keys
+        old_raw_values = self._raw_values
+
+        kwargs = dict(device=new_keys.device, dtype=new_keys.dtype)
+        self._raw_keys = torch.empty(n_ctx_after_grow, n_heads, d_head, **kwargs)
+        self._raw_values = torch.empty(n_ctx_after_grow, n_heads, d_head, **kwargs)
+
+        if old_raw_keys is not None:
+            self._raw_keys[:old_n_ctx] = old_raw_keys[:old_n_ctx]
+            self._raw_values[:old_n_ctx] = old_raw_values[:old_n_ctx]
+
+        self._raw_keys[old_n_ctx:new_n_ctx] = new_keys
+        self._raw_values[old_n_ctx:new_n_ctx] = new_values
+        self._n_ctx = new_n_ctx
 
 
-def _single_seq_kv_cache(n_ctx, value, n_heads, d_per_head) -> SingleSeqKVCache:
-    return SingleSeqKVCache(
-        keys=torch.full([n_ctx, n_heads, d_per_head], value, **bf16_cuda()),
-        values=torch.full([n_ctx, n_heads, d_per_head], value, **bf16_cuda()),
-    )
+def _new_kvs(n_ctx, value, n_heads, d_per_head) -> Tuple[torch.Tensor, torch.Tensor]:
+    keys = torch.full([n_ctx, n_heads, d_per_head], value, **bf16_cuda())
+    values = torch.full([n_ctx, n_heads, d_per_head], value, **bf16_cuda())
+    return (keys, values)
 
 
 def extend_kv_caches_in_place(
@@ -130,6 +134,8 @@ def garbage_pad_seq_kv_cache(
 
 def garbage_pad_keys(
     seq_kv_cache: List[SingleSeqKVCache],
+    n_heads: int,
+    d_head: int,
 ) -> torch.Tensor:
     single_seq_kv_cache = seq_kv_cache[0]
     assert single_seq_kv_cache.is_cuda
@@ -144,8 +150,8 @@ def garbage_pad_keys(
     padded_keys = torch.empty(
         n_seqs,
         n_ctx_max,
-        single_seq_kv_cache.n_heads,
-        single_seq_kv_cache.d_model_per_gpu,
+        n_heads,
+        d_head,
         dtype=dtype,
         device="cuda",
     )
@@ -178,7 +184,11 @@ def calculate_scores_via_qk_dotprod(
     seq_kv_cache: List[SingleSeqKVCache],  # These have already been extended
     active_queries: RaggedActivations,
 ) -> torch.Tensor:
-    padded_keys = garbage_pad_keys(seq_kv_cache)
+    padded_keys = garbage_pad_keys(
+        seq_kv_cache,
+        n_heads=active_queries.raw_tensor.shape[1],
+        d_head=active_queries.raw_tensor.shape[2],
+    )
     padded_active_queries = active_queries.to_garbage_padded()
     return torch.einsum("skhd,sqhd->sqhk", padded_keys, padded_active_queries)
 
