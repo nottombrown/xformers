@@ -9,6 +9,7 @@ import time
 import torch
 from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
 from ragged_inference_v2.seq_kv_cache import (
+    LocalSingleSeqKVCache,
     SingleSeqKVCache,
     _new_kvs,
     calculate_scores_via_qk_dotprod,
@@ -54,6 +55,55 @@ def test_extend_kv_caches_correctness():
 
     assert_eq(seq_kv_caches[2].keys[:, 0, 0].cpu(), [55, 55, 55, 55, 55, 55, 55, 1])
     assert_eq(seq_kv_caches[2].values[:, 0, 0].cpu(), [55, 55, 55, 55, 55, 55, 55, 2])
+
+
+def test_extend_local_kv_caches_correctness():
+    d_head = 6
+    n_heads = 2
+    n_seqs = 3
+    local_ctx = 4
+    seq_kv_caches = [LocalSingleSeqKVCache(local_ctx=local_ctx) for _ in range(n_seqs)]
+    kwargs = dict(n_heads=n_heads, d_per_head=d_head)
+
+    seq_kv_caches[0].extend_in_place(*_new_kvs(n_ctx=1, value=33, **kwargs))
+    seq_kv_caches[1].extend_in_place(*_new_kvs(n_ctx=3, value=42, **kwargs))
+    seq_kv_caches[2].extend_in_place(*_new_kvs(n_ctx=7, value=55, **kwargs))
+
+    assert_eq(seq_kv_caches[0].keys[:, 0, 0].cpu(), [33])
+    assert_eq(seq_kv_caches[0].values[:, 0, 0].cpu(), [33])
+
+    assert_eq(seq_kv_caches[1].keys[:, 0, 0].cpu(), [42, 42, 42])
+    assert_eq(seq_kv_caches[1].values[:, 0, 0].cpu(), [42, 42, 42])
+
+    assert_eq(seq_kv_caches[2].keys[:, 0, 0].cpu(), [55, 55, 55, 55])
+    assert_eq(seq_kv_caches[2].values[:, 0, 0].cpu(), [55, 55, 55, 55])
+
+    n_ctx_new = 1
+    active_keys = RaggedActivations.from_list(
+        [
+            torch.ones(n_ctx_new, n_heads, d_head, **bf16_cuda()),
+            torch.ones(n_ctx_new, n_heads, d_head, **bf16_cuda()),
+            torch.ones(n_ctx_new, n_heads, d_head, **bf16_cuda()),
+        ]
+    )
+    active_values = RaggedActivations.from_list(
+        [
+            torch.ones(n_ctx_new, n_heads, d_head, **bf16_cuda()) * 2,
+            torch.ones(n_ctx_new, n_heads, d_head, **bf16_cuda()) * 2,
+            torch.ones(n_ctx_new, n_heads, d_head, **bf16_cuda()) * 2,
+        ]
+    )
+
+    extend_kv_caches_in_place(seq_kv_caches, active_keys, active_values)
+
+    assert_eq(seq_kv_caches[0].keys[:, 0, 0].cpu(), [33, 1])
+    assert_eq(seq_kv_caches[0].values[:, 0, 0].cpu(), [33, 2])
+
+    assert_eq(seq_kv_caches[1].keys[:, 0, 0].cpu(), [42, 42, 42, 1])
+    assert_eq(seq_kv_caches[1].values[:, 0, 0].cpu(), [42, 42, 42, 2])
+
+    assert_eq(seq_kv_caches[2].keys[:, 0, 0].cpu(), [55, 55, 55, 1])
+    assert_eq(seq_kv_caches[2].values[:, 0, 0].cpu(), [55, 55, 55, 2])
 
 
 def test_calculate_scores_via_qk_dotprod_throughput(
