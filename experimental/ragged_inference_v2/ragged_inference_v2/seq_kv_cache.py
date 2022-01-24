@@ -59,7 +59,9 @@ class SingleSeqKVCache:
     def _buffer_size(self):
         return 0 if self.is_empty else self._raw_values.shape[0]
 
-    def extend_in_place(self, new_keys: torch.Tensor, new_values: torch.Tensor):
+    def extend_and_return_all(
+        self, new_keys: torch.Tensor, new_values: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         assert_eq(new_keys.ndim, 3)
         assert_eq(new_values.ndim, 3)
         n_ctx_from_new_keys, n_heads, d_head = new_keys.shape
@@ -91,6 +93,8 @@ class SingleSeqKVCache:
 
         self._n_ctx = new_n_ctx
 
+        return self.keys, self.values
+
 
 class LocalSingleSeqKVCache(SingleSeqKVCache):
     def __init__(self, local_ctx: int):
@@ -110,10 +114,11 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
     def values(self) -> torch.Tensor:
         return self._raw_values[self._buffer_slice_start : self._buffer_slice_end]
 
-    def extend_in_place(self, new_keys: torch.Tensor, new_values: torch.Tensor):
-        raise NotImplementedError("Use extend_in_place_and_return_all instead")
+    @property
+    def n_ctx(self):
+        return self._buffer_slice_end - self._buffer_slice_start
 
-    def extend_in_place_and_return_all(
+    def extend_and_return_all(
         self, new_keys: torch.Tensor, new_values: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         assert_eq(new_keys.ndim, 3)
@@ -182,20 +187,7 @@ def extend_kv_caches_in_place(
         active_keys.iter_full_tensors(),
         active_values.iter_full_tensors(),
     ):
-        cache.extend_in_place(keys, values)
-
-
-def extend_local_kv_caches_in_place(
-    seq_kv_caches: List[LocalSingleSeqKVCache],
-    active_keys: RaggedActivations,
-    active_values: RaggedActivations,
-) -> None:
-    for cache, keys, values in zip(
-        seq_kv_caches,
-        active_keys.iter_full_tensors(),
-        active_values.iter_full_tensors(),
-    ):
-        cache.extend_in_place_and_return_all(keys, values)
+        cache.extend_and_return_all(keys, values)
 
 
 def garbage_pad_seq_kv_cache(
