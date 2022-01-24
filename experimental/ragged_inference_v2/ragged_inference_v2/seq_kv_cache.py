@@ -44,6 +44,11 @@ class SingleSeqKVCache:
         return self._n_ctx
 
     @property
+    def n_ctx_in_buffer(self):
+        """Physical amount that exists in the buffer"""
+        return self._n_ctx
+
+    @property
     def is_empty(self):
         return self._raw_keys is None
 
@@ -105,6 +110,7 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
 
         self._buffer_slice_start = 0
         self._buffer_slice_end = 0
+        self._n_ctx = 0
 
     @property
     def keys(self) -> torch.Tensor:
@@ -115,7 +121,8 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
         return self._raw_values[self._buffer_slice_start : self._buffer_slice_end]
 
     @property
-    def n_ctx(self):
+    def n_ctx_in_buffer(self):
+        """Physical amount that exists in the buffer"""
         return self._buffer_slice_end - self._buffer_slice_start
 
     def extend_and_return_all(
@@ -170,6 +177,7 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
             self._buffer_slice_start = 0
             self._buffer_slice_end = self.local_ctx
 
+        self._n_ctx += n_ctx_from_new_keys
         return all_keys, all_values
 
 
