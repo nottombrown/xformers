@@ -152,18 +152,20 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
             all_keys = torch.cat([self._raw_keys[old_slice], new_keys])
             all_values = torch.cat([self._raw_values[old_slice], new_values])
 
-            trailing_n_ctx = buffer_n_ctx - self.local_ctx
+            end_padding_ctx = buffer_n_ctx - self.local_ctx
 
             # Can be empty because it's sent to our triton op
-            trailing_keys = torch.empty(trailing_n_ctx, n_heads, d_head, **kwargs)
+            key_end_padding = torch.empty(end_padding_ctx, n_heads, d_head, **kwargs)
             # Need to use zeros for the values
-            trailing_values = torch.zeros(trailing_n_ctx, n_heads, d_head, **kwargs)
+            value_end_padding = torch.zeros(end_padding_ctx, n_heads, d_head, **kwargs)
 
             assert all_keys.shape[0] > self.local_ctx
-            self._raw_keys = torch.cat([all_keys[: self.local_ctx], trailing_keys])
-            self._raw_values = torch.cat(
-                [all_values[: self.local_ctx], trailing_values]
-            )
+
+            last_keys = all_keys[-self.local_ctx :]
+            self._raw_keys = torch.cat([last_keys, key_end_padding])
+
+            last_values = all_values[-self.local_ctx :]
+            self._raw_values = torch.cat([last_values, value_end_padding])
 
             self._buffer_slice_start = 0
             self._buffer_slice_end = self.local_ctx

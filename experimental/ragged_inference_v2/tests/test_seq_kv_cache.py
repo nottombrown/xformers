@@ -99,12 +99,15 @@ def test_local_kv_caches_extend_and_return_all_correctness():
 
     extend_kv_caches_in_place(seq_kv_caches, active_keys, active_values)
 
+    assert_eq(seq_kv_caches[0].n_ctx, 2)
     assert_eq(seq_kv_caches[0].keys[:, 0, 0].cpu(), [33, 1])
     assert_eq(seq_kv_caches[0].values[:, 0, 0].cpu(), [33, 2])
 
+    assert_eq(seq_kv_caches[1].n_ctx, 4)
     assert_eq(seq_kv_caches[1].keys[:, 0, 0].cpu(), [42, 42, 42, 1])
     assert_eq(seq_kv_caches[1].values[:, 0, 0].cpu(), [42, 42, 42, 2])
 
+    assert_eq(seq_kv_caches[2].n_ctx, 4)
     assert_eq(seq_kv_caches[2].keys[:, 0, 0].cpu(), [55, 55, 55, 1])
     assert_eq(seq_kv_caches[2].values[:, 0, 0].cpu(), [55, 55, 55, 2])
 
