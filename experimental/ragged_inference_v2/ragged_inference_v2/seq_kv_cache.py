@@ -60,6 +60,18 @@ class SingleSeqKVCache:
     def dtype(self):
         return self._raw_values.dtype
 
+    def to_gpu(self):
+        if self._raw_keys is not None:
+            self._raw_keys.cuda()
+        if self._raw_values is not None:
+            self._raw_values.cuda()
+
+    def to_cpu(self):
+        if self._raw_keys is not None:
+            self._raw_keys.cpu()
+        if self._raw_values is not None:
+            self._raw_values.cpu()
+
     @property
     def _buffer_size(self):
         return 0 if self.is_empty else self._raw_values.shape[0]
