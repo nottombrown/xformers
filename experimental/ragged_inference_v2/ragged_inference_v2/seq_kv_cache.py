@@ -54,7 +54,7 @@ class SingleSeqKVCache:
 
     @property
     def is_cuda(self):
-        return self._raw_values.is_cuda
+        return self._raw_values is None or self._raw_values.is_cuda
 
     @property
     def dtype(self):
