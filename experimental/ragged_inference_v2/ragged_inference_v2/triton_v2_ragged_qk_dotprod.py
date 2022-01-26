@@ -6,7 +6,6 @@ import torch
 import triton
 import triton.language as tl
 from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
-from triton.ops.matmul_perf_model import estimate_matmul_time, prune_num_stages
 
 
 def init_to_zero(name):
@@ -29,15 +28,21 @@ def get_fast_dev_configs():
     ]
 
 
+def fancy_prune_configs_by():
+    from triton.ops.matmul_perf_model import estimate_matmul_time, prune_num_stages
+
+    return {
+        "prune_num_stages_by": prune_num_stages,
+        "perf_model": estimate_matmul_time,
+        "top_k": 10,
+    }
+
+
 @triton.autotune(
     # configs=get_all_configs(),
     configs=get_fast_dev_configs(),
     key=["max_n_ctx_q_across_seqs", "max_n_ctx_k_across_seqs", "d_head"],
-    prune_configs_by={
-        "prune_num_stages_by": prune_num_stages,
-        "perf_model": estimate_matmul_time,
-        "top_k": 10,
-    },
+    # prune_configs_by=fancy_prune_configs_by()
 )
 @triton.jit
 def _qk_dotprod_kernel(
