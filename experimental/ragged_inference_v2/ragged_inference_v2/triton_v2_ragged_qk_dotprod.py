@@ -340,9 +340,12 @@ def ragged_qk_dotprod(
     assert n_heads == n_heads_k, f"{query.raw_tensor.shape=} {key.raw_tensor.shape=}"
     assert query.n_seqs == key.n_seqs
 
-    # allocates output
-    # TODO: flag use zeros for garbage
-    scores_out = torch.empty(
+    # NB: it is *extremely* important to use torch.zeros here rather than torch.empty
+    # because otherwise we will sometimes get NaNs in the garbage_padding, which can
+    # cause issues in the downstream op even with masking (as it can be  hard to mask
+    # out a NaN). This is a perf hit, but we will resolve it by returning a ragged
+    # output once we add ragged softmax and value-prob dotprod ops
+    scores_out = torch.zeros(
         (n_heads, query.n_seqs, query.max_n_ctx_per_seq, key.max_n_ctx_per_seq),
         device=device,
         dtype=query.dtype,
