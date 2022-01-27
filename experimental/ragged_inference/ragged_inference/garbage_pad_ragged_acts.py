@@ -8,7 +8,7 @@ from typing import List
 
 import numpy as np
 import torch
-from ragged_inference_v2.test_utils import assert_eq
+from ragged_inference.test_utils import assert_eq
 
 
 class RaggedActivations:

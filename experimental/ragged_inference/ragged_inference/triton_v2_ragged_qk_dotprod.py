@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 import torch
 import triton
 import triton.language as tl
-from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
+from ragged_inference.garbage_pad_ragged_acts import RaggedActivations
 
 
 def init_to_zero(name):
