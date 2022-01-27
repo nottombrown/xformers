@@ -14,7 +14,7 @@ from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 # have to do expensive memcopies as frequently as we would otherwise
 EXTEND_GROWTH_FACTOR = 1.1
 
-MIN_N_CTX = 64
+MIN_N_CTX = 32
 
 
 class SingleSeqKVCache:
@@ -25,7 +25,7 @@ class SingleSeqKVCache:
         self._raw_keys: torch.Tensor = None
         self._raw_values: torch.Tensor = None
 
-        self._n_ctx = 0  # Total number of tokens appended
+        self._n_ctx_total_seen = 0  # Total number of tokens appended
 
     @property
     def keys(self) -> torch.Tensor:
@@ -41,12 +41,12 @@ class SingleSeqKVCache:
         Total number of tokens ever appended. Not the raw_tensor. If it's local for example,
         this could be more than the raw_tensor
         """
-        return self._n_ctx
+        return self._n_ctx_total_seen
 
     @property
     def n_ctx_in_buffer(self):
         """Physical amount that exists in the buffer"""
-        return self._n_ctx
+        return self._n_ctx_total_seen
 
     @property
     def is_empty(self):
@@ -108,24 +108,21 @@ class SingleSeqKVCache:
             self._raw_keys[old_n_ctx:new_n_ctx] = new_keys
             self._raw_values[old_n_ctx:new_n_ctx] = new_values
 
-        self._n_ctx = new_n_ctx
+        self._n_ctx_total_seen = new_n_ctx
 
         return self.keys, self.values
-
-
-LOCAL_BUFFER_MULTIPLE = 1.5
 
 
 class LocalSingleSeqKVCache(SingleSeqKVCache):
     def __init__(self, local_ctx: int):
         super().__init__()
-        self.local_ctx = local_ctx
+        self.local_ctx = local_ctx  # local ctx window
 
         # Slices into the raw_keys and raw_values buffer
 
         self._buffer_slice_start = 0
         self._buffer_slice_end = 0
-        self._n_ctx = 0
+        self._n_ctx_total_seen = 0  # total number of ctx tokens seen
 
     @property
     def keys(self) -> torch.Tensor:
@@ -147,52 +144,30 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
         assert_eq(new_values.ndim, 3)
         n_ctx_from_new_keys, n_heads, d_head = new_keys.shape
 
-        buffer_n_ctx = math.ceil(LOCAL_BUFFER_MULTIPLE * self.local_ctx)
         kwargs = dict(device=new_keys.device, dtype=new_keys.dtype)
 
         if self.is_empty:
             # Can be empty because it's sent to our triton op
-            self._raw_keys = torch.empty(buffer_n_ctx, n_heads, d_head, **kwargs)
+            self._raw_keys = torch.empty(self.local_ctx, n_heads, d_head, **kwargs)
             # Need to use zeros for the values
-            self._raw_values = torch.zeros(buffer_n_ctx, n_heads, d_head, **kwargs)
+            self._raw_values = torch.zeros(self.local_ctx, n_heads, d_head, **kwargs)
 
-        buffer_end_after_adding = self._buffer_slice_end + n_ctx_from_new_keys
-        will_fit = buffer_end_after_adding <= buffer_n_ctx
-        if will_fit:
-            slice_for_new = slice(self._buffer_slice_end, buffer_end_after_adding)
-            self._raw_keys[slice_for_new] = new_keys
-            self._raw_values[slice_for_new] = new_values
+        old_slice = slice(self._buffer_slice_start, self._buffer_slice_end)
+        all_keys = torch.cat([self._raw_keys[old_slice], new_keys])
+        all_values = torch.cat([self._raw_values[old_slice], new_values])
 
-            slice_for_all = slice(self._buffer_slice_start, buffer_end_after_adding)
-            all_keys = self._raw_keys[slice_for_all]
-            all_values = self._raw_values[slice_for_all]
+        self._n_ctx_total_seen += n_ctx_from_new_keys
+        new_buffer_slice_end = min(self._n_ctx_total_seen, self.local_ctx)
 
-            self._buffer_slice_end = buffer_end_after_adding
-            self._buffer_slice_start = max(0, self._buffer_slice_end - self.local_ctx)
-        else:
-            old_slice = slice(self._buffer_slice_start, self._buffer_slice_end)
-            all_keys = torch.cat([self._raw_keys[old_slice], new_keys])
-            all_values = torch.cat([self._raw_values[old_slice], new_values])
+        last_keys = all_keys[-self.local_ctx :]
+        self._raw_keys[:new_buffer_slice_end] = last_keys
 
-            end_padding_ctx = buffer_n_ctx - self.local_ctx
+        last_values = all_values[-self.local_ctx :]
+        self._raw_values[:new_buffer_slice_end] = last_values
 
-            # Can be empty because it's sent to our triton op
-            key_end_padding = torch.empty(end_padding_ctx, n_heads, d_head, **kwargs)
-            # Need to use zeros for the values
-            value_end_padding = torch.zeros(end_padding_ctx, n_heads, d_head, **kwargs)
+        self._buffer_slice_start = 0
+        self._buffer_slice_end = new_buffer_slice_end
 
-            assert all_keys.shape[0] > self.local_ctx
-
-            last_keys = all_keys[-self.local_ctx :]
-            self._raw_keys = torch.cat([last_keys, key_end_padding])
-
-            last_values = all_values[-self.local_ctx :]
-            self._raw_values = torch.cat([last_values, value_end_padding])
-
-            self._buffer_slice_start = 0
-            self._buffer_slice_end = self.local_ctx
-
-        self._n_ctx += n_ctx_from_new_keys
         return all_keys, all_values
 
 
