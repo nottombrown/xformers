@@ -12,7 +12,7 @@ from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
 
 # Whenever we need to grow the tensor, we extend by this amount extra so that we don't
 # have to do expensive memcopies as frequently as we would otherwise
-EXTEND_GROWTH_FACTOR = 1.3
+EXTEND_GROWTH_FACTOR = 1.1
 
 MIN_N_CTX = 64
 
