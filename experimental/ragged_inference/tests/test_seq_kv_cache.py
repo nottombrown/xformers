@@ -7,15 +7,15 @@
 import time
 
 import torch
-from ragged_inference_v2.garbage_pad_ragged_acts import RaggedActivations
-from ragged_inference_v2.seq_kv_cache import (
+from ragged_inference.garbage_pad_ragged_acts import RaggedActivations
+from ragged_inference.seq_kv_cache import (
     LocalSingleSeqKVCache,
     SingleSeqKVCache,
     _new_kvs,
     calculate_scores_via_qk_dotprod,
     extend_kv_caches_in_place,
 )
-from ragged_inference_v2.test_utils import assert_eq, bf16_cuda
+from ragged_inference.test_utils import assert_eq, bf16_cuda
 
 
 def test_extend_kv_caches_correctness():
