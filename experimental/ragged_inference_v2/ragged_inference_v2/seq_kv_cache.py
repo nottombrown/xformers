@@ -113,6 +113,9 @@ class SingleSeqKVCache:
         return self.keys, self.values
 
 
+LOCAL_BUFFER_MULTIPLE = 1.5
+
+
 class LocalSingleSeqKVCache(SingleSeqKVCache):
     def __init__(self, local_ctx: int):
         super().__init__()
@@ -144,7 +147,7 @@ class LocalSingleSeqKVCache(SingleSeqKVCache):
         assert_eq(new_values.ndim, 3)
         n_ctx_from_new_keys, n_heads, d_head = new_keys.shape
 
-        buffer_n_ctx = math.ceil(1.5 * self.local_ctx)
+        buffer_n_ctx = math.ceil(LOCAL_BUFFER_MULTIPLE * self.local_ctx)
         kwargs = dict(device=new_keys.device, dtype=new_keys.dtype)
 
         if self.is_empty:
