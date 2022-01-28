@@ -8,7 +8,6 @@ from typing import List
 
 import numpy as np
 import torch
-
 from ragged_inference.test_utils import assert_eq
 
 

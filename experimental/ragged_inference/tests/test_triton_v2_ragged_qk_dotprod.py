@@ -5,7 +5,6 @@
 import time
 
 import torch
-
 from ragged_inference.garbage_pad_ragged_acts import RaggedActivations
 from ragged_inference.seq_kv_cache import scores_via_qk_dotprod
 from ragged_inference.test_utils import assert_eq, bf16_cuda
