@@ -5,6 +5,7 @@
 import time
 
 import torch
+
 from ragged_inference.garbage_pad_ragged_acts import RaggedActivations
 from ragged_inference.seq_kv_cache import scores_via_qk_dotprod
 from ragged_inference.test_utils import assert_eq, bf16_cuda
@@ -155,12 +156,12 @@ def test_ragged_qk_dotprod_multiple_seqs_perf():
     )
 
     for _ in range(3):
-        out = ragged_qk_dotprod(query, key, lut)
+        ragged_qk_dotprod(query, key, lut)
 
     torch.cuda.synchronize()
     started_at = time.time()
     for _ in range(n_iters):
-        out = ragged_qk_dotprod(query, key, lut)
+        ragged_qk_dotprod(query, key, lut)
     torch.cuda.synchronize()
 
     elapsed_micros = (time.time() - started_at) * 1e6

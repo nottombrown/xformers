@@ -3,10 +3,10 @@
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
 import math
-from functools import lru_cache
 from typing import List, Tuple
 
 import torch
+
 from ragged_inference.garbage_pad_ragged_acts import RaggedActivations
 from ragged_inference.test_utils import assert_eq, bf16_cuda
 
@@ -188,102 +188,6 @@ def extend_kv_caches_in_place(
         active_values.iter_full_tensors(),
     ):
         cache.extend_and_return_all(keys, values)
-
-
-def garbage_pad_seq_kv_cache(
-    seq_kv_cache: List[SingleSeqKVCache],
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    assert seq_kv_cache[0].is_cuda
-    dtype = seq_kv_cache[0].dtype
-    n_ctx_per_kv_cache = [seq.n_ctx for seq in seq_kv_cache]
-    assert_eq(seq_kv_cache.raw_tensor.ndim, 3)
-
-    # Create a view so that the output is (n_seqs, n_ctx_max, d_model)
-    # This should not incur an extra memcopy
-    n_seqs = len(n_ctx_per_kv_cache)
-    n_ctx_max = max(n_ctx_per_kv_cache)
-
-    padded_keys = torch.empty(
-        n_seqs,
-        n_ctx_max,
-        seq_kv_cache[0].d_model_per_gpu,
-        dtype=dtype,
-        device="cuda",
-    )
-
-    padded_values = torch.empty(
-        n_seqs,
-        n_ctx_max,
-        seq_kv_cache[0].d_model_per_gpu,
-        dtype=dtype,
-        device="cuda",
-    )
-
-    for seq_idx, seq in enumerate(seq_kv_cache):
-        padded_keys[seq_idx, seq.n_ctx, :, :] = seq.keys
-        padded_values[seq_idx, seq.n_ctx, :, :] = seq.values
-    return (padded_keys, padded_values)
-
-
-def garbage_pad_keys(
-    seq_kv_cache: List[SingleSeqKVCache],
-    n_heads: int,
-    d_head: int,
-) -> torch.Tensor:
-    single_seq_kv_cache = seq_kv_cache[0]
-    assert single_seq_kv_cache.is_cuda
-    dtype = single_seq_kv_cache.dtype
-    n_ctx_per_kv_cache = [seq.n_ctx for seq in seq_kv_cache]
-
-    # Create a view so that the output is (n_seqs, n_ctx_max, d_model)
-    # This should not incur an extra memcopy
-    n_seqs = len(n_ctx_per_kv_cache)
-    n_ctx_max = max(n_ctx_per_kv_cache)
-
-    padded_keys = torch.empty(
-        n_seqs,
-        n_ctx_max,
-        n_heads,
-        d_head,
-        dtype=dtype,
-        device="cuda",
-    )
-
-    for seq_idx, seq in enumerate(seq_kv_cache):
-        padded_keys[seq_idx, : seq.n_ctx, :, :] = seq.keys
-    return padded_keys
-
-
-@lru_cache(maxsize=1)  # Memoize because we repeat this for consecutive resblocks
-def _create_indices(n_ctx_per_kv_cache):
-    """
-    We cache this because it requires some substantial CPU work and it's done multiple
-    times sequentially (once per resblock)
-    """
-    indices_list = []
-    ragged_idx = 0
-    max_n_ctx = max(n_ctx_per_kv_cache)
-    for n_ctx in n_ctx_per_kv_cache:
-        for idx_into_seq in range(max_n_ctx):
-            if idx_into_seq < n_ctx:
-                indices_list.append(ragged_idx)
-                ragged_idx += 1
-            else:
-                indices_list.append(0)  # Add a placeholder
-    return torch.tensor(indices_list, device="cuda")
-
-
-def calculate_scores_via_qk_dotprod(
-    seq_kv_cache: List[SingleSeqKVCache],  # These have already been extended
-    active_queries: RaggedActivations,
-) -> torch.Tensor:
-    padded_keys = garbage_pad_keys(
-        seq_kv_cache,
-        n_heads=active_queries.raw_tensor.shape[1],
-        d_head=active_queries.raw_tensor.shape[2],
-    )
-    padded_active_queries = active_queries.to_garbage_padded()
-    return torch.einsum("skhd,sqhd->sqhk", padded_keys, padded_active_queries)
 
 
 def scores_via_qk_dotprod(
